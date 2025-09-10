@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>贪吃蛇 Snake</title>
+    <style>
+      :root {
+        --bg: #121212;
+        --grid: #1c1c1c;
+        --snake: #28c878;
+        --snake-head: #3ce696;
+        --food: #e65050;
+        --text: #e6e6e6;
+        --text-dim: #8c8c8c;
+        --accent: #3ce696;
+      }
+      html, body {
+        height: 100%;
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      }
+      .wrap {
+        min-height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        box-sizing: border-box;
+      }
+      .panel {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        align-items: center;
+      }
+      canvas {
+        background: var(--bg);
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0,0,0,.35), inset 0 0 0 1px #222;
+      }
+      .hud {
+        width: 640px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: var(--text);
+        font-size: 14px;
+      }
+      .hud .left, .hud .right { opacity: .9; }
+      .kbd {
+        display: inline-block;
+        padding: 2px 6px;
+        border: 1px solid #333;
+        border-bottom-width: 2px;
+        border-radius: 6px;
+        background: #161616;
+        color: var(--text);
+        font-size: 12px;
+      }
+      .btn {
+        cursor: pointer;
+        padding: 6px 10px;
+        border-radius: 8px;
+        border: 1px solid #2a2a2a;
+        background: #1a1a1a;
+        color: var(--text);
+      }
+      .btn:hover { border-color: #3a3a3a; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="panel">
+        <div class="hud">
+          <div class="left">
+            分数: <span id="score">0</span>
+            &nbsp;|&nbsp; 最高分: <span id="hiscore">0</span>
+          </div>
+          <div class="right">
+            速度: <span id="speed">6</span> FPS &nbsp;|&nbsp;
+            控制: <span class="kbd">WASD/方向键</span> 暂停: <span class="kbd">P</span> 重开: <span class="kbd">R</span>
+            &nbsp; <button id="btnPause" class="btn">暂停</button>
+            <button id="btnRestart" class="btn">重开</button>
+          </div>
+        </div>
+        <canvas id="game" width="640" height="480"></canvas>
+      </div>
+    </div>
+
+    <script>
+      (function() {
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+
+        const scoreEl = document.getElementById('score');
+        const hiscoreEl = document.getElementById('hiscore');
+        const speedEl = document.getElementById('speed');
+        const btnPause = document.getElementById('btnPause');
+        const btnRestart = document.getElementById('btnRestart');
+
+        const WIDTH = canvas.width;
+        const HEIGHT = canvas.height;
+        const GRID = 20;
+        const COLS = Math.floor(WIDTH / GRID);
+        const ROWS = Math.floor(HEIGHT / GRID);
+
+        const COLORS = {
+          grid: '#1c1c1c',
+          snake: '#28c878',
+          snakeHead: '#3ce696',
+          food: '#e65050',
+          text: '#e6e6e6',
+          dim: '#8c8c8c'
+        };
+
+        const INITIAL_FPS = 6;
+        const SPEEDUP_EVERY = 5;
+        const SPEEDUP_STEP = 1;
+        const MAX_FPS = 28;
+
+        const DIR = {
+          UP: {x: 0, y: -1},
+          DOWN: {x: 0, y: 1},
+          LEFT: {x: -1, y: 0},
+          RIGHT: {x: 1, y: 0}
+        };
+
+        function opposite(a, b) {
+          return a && b && (a.x === -b.x && a.y === -b.y);
+        }
+
+        let snake, dir, grow, food, score, hiscore, paused, over, fps, eatenSinceSpeedup;
+        let timerId = null;
+
+        function loadHiScore() {
+          try {
+            const v = localStorage.getItem('snake_hiscore');
+            return v ? Number(v) : 0;
+          } catch (e) {
+            return 0;
+          }
+        }
+        function saveHiScore(v) {
+          try { localStorage.setItem('snake_hiscore', String(v)); } catch (e) {}
+        }
+
+        function reset() {
+          const sx = Math.floor(COLS / 2);
+          const sy = Math.floor(ROWS / 2);
+          snake = [ {x: sx, y: sy}, {x: sx - 1, y: sy}, {x: sx - 2, y: sy} ];
+          dir = DIR.RIGHT;
+          grow = 0;
+          food = randomEmptyCell();
+          score = 0;
+          eatenSinceSpeedup = 0;
+          over = false;
+          paused = false;
+          fps = INITIAL_FPS;
+          hiscore = Math.max(loadHiScore(), hiscore || 0);
+          updateHud();
+          restartTimer();
+          draw();
+        }
+
+        function randomEmptyCell() {
+          const occupied = new Set(snake.map(s => `${s.x},${s.y}`));
+          const free = [];
+          for (let x = 0; x < COLS; x++) {
+            for (let y = 0; y < ROWS; y++) {
+              const key = `${x},${y}`;
+              if (!occupied.has(key)) free.push({x, y});
+            }
+          }
+          if (free.length === 0) return {x: 0, y: 0};
+          return free[Math.floor(Math.random() * free.length)];
+        }
+
+        function updateHud() {
+          scoreEl.textContent = String(score);
+          hiscoreEl.textContent = String(hiscore);
+          speedEl.textContent = String(fps);
+          btnPause.textContent = paused ? '继续' : '暂停';
+        }
+
+        function restartTimer() {
+          if (timerId) clearInterval(timerId);
+          timerId = setInterval(tick, Math.max(20, Math.floor(1000 / fps)));
+        }
+
+        function setDirection(newDir) {
+          if (over) return;
+          if (opposite(newDir, dir)) return;
+          dir = newDir;
+        }
+
+        function tick() {
+          if (paused || over) return;
+          const head = snake[0];
+          const nx = (head.x + dir.x + COLS) % COLS;
+          const ny = (head.y + dir.y + ROWS) % ROWS;
+          const newHead = {x: nx, y: ny};
+
+          // self collision
+          for (let i = 0; i < snake.length; i++) {
+            const s = snake[i];
+            if (s.x === newHead.x && s.y === newHead.y) {
+              over = true;
+              hiscore = Math.max(hiscore, score);
+              saveHiScore(hiscore);
+              updateHud();
+              draw();
+              return;
+            }
+          }
+
+          snake.unshift(newHead);
+          if (grow > 0) {
+            grow--;
+          } else {
+            snake.pop();
+          }
+
+          if (newHead.x === food.x && newHead.y === food.y) {
+            grow++;
+            score++;
+            eatenSinceSpeedup++;
+            food = randomEmptyCell();
+            if (eatenSinceSpeedup >= SPEEDUP_EVERY) {
+              eatenSinceSpeedup = 0;
+              fps = Math.min(MAX_FPS, fps + SPEEDUP_STEP);
+              restartTimer();
+            }
+            updateHud();
+          }
+
+          draw();
+        }
+
+        function drawGrid() {
+          ctx.strokeStyle = COLORS.grid;
+          ctx.lineWidth = 1;
+          for (let x = 0; x <= WIDTH; x += GRID) {
+            ctx.beginPath();
+            ctx.moveTo(x + .5, 0);
+            ctx.lineTo(x + .5, HEIGHT);
+            ctx.stroke();
+          }
+          for (let y = 0; y <= HEIGHT; y += GRID) {
+            ctx.beginPath();
+            ctx.moveTo(0, y + .5);
+            ctx.lineTo(WIDTH, y + .5);
+            ctx.stroke();
+          }
+        }
+
+        function roundRect(x, y, w, h, r) {
+          ctx.beginPath();
+          ctx.moveTo(x + r, y);
+          ctx.arcTo(x + w, y, x + w, y + h, r);
+          ctx.arcTo(x + w, y + h, x, y + h, r);
+          ctx.arcTo(x, y + h, x, y, r);
+          ctx.arcTo(x, y, x + w, y, r);
+          ctx.closePath();
+        }
+
+        function drawSnake() {
+          for (let i = 0; i < snake.length; i++) {
+            const s = snake[i];
+            const x = s.x * GRID;
+            const y = s.y * GRID;
+            ctx.fillStyle = i === 0 ? COLORS.snakeHead : COLORS.snake;
+            roundRect(x + 2, y + 2, GRID - 4, GRID - 4, 5);
+            ctx.fill();
+          }
+        }
+
+        function drawFood() {
+          const x = food.x * GRID;
+          const y = food.y * GRID;
+          ctx.fillStyle = COLORS.food;
+          roundRect(x + 3, y + 3, GRID - 6, GRID - 6, 6);
+          ctx.fill();
+        }
+
+        function drawOverlay(textTop, textMid, textBottom) {
+          ctx.fillStyle = 'rgba(0,0,0,.45)';
+          ctx.fillRect(0, 0, WIDTH, HEIGHT);
+          ctx.fillStyle = COLORS.text;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.font = 'bold 36px Consolas, monospace';
+          ctx.fillText(textTop, WIDTH / 2, HEIGHT / 2 - 34);
+          ctx.font = '20px Consolas, monospace';
+          if (textMid) ctx.fillText(textMid, WIDTH / 2, HEIGHT / 2);
+          ctx.fillStyle = COLORS.dim;
+          if (textBottom) ctx.fillText(textBottom, WIDTH / 2, HEIGHT / 2 + 30);
+        }
+
+        function draw() {
+          ctx.clearRect(0, 0, WIDTH, HEIGHT);
+          drawGrid();
+          drawSnake();
+          drawFood();
+          if (paused) {
+            drawOverlay('暂停', '按 P 继续', 'R 重开');
+          } else if (over) {
+            drawOverlay('游戏结束', `分数 ${score}`, 'R 重开');
+          }
+        }
+
+        function onKey(e) {
+          const k = e.key.toLowerCase();
+          if (k === 'arrowup' || k === 'w') setDirection(DIR.UP);
+          else if (k === 'arrowdown' || k === 's') setDirection(DIR.DOWN);
+          else if (k === 'arrowleft' || k === 'a') setDirection(DIR.LEFT);
+          else if (k === 'arrowright' || k === 'd') setDirection(DIR.RIGHT);
+          else if (k === 'p') { paused = !paused && !over; updateHud(); draw(); }
+          else if (k === 'r') { reset(); }
+        }
+
+        document.addEventListener('keydown', onKey);
+        btnPause.addEventListener('click', () => { if (!over) { paused = !paused; updateHud(); draw(); } });
+        btnRestart.addEventListener('click', reset);
+
+        // start
+        reset();
+      })();
+    </script>
+  </body>
+</html>
